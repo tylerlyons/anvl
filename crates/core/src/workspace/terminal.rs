@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,7 +11,7 @@ use tokio::sync::mpsc;
 #[derive(Default)]
 pub struct WorkspaceTerminals {
     pub agent: Option<TerminalSession>,
-    pub shell: Option<TerminalSession>,
+    pub shells: HashMap<String, TerminalSession>,
 }
 
 pub struct TerminalSession {
@@ -28,7 +29,6 @@ impl TerminalSession {
     pub async fn send_input(&self, bytes: &[u8]) -> Result<()> {
         let mut writer = self.writer.lock();
         writer.write_all(bytes)?;
-        writer.flush()?;
         Ok(())
     }
 

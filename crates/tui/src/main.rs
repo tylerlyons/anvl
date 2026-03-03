@@ -3,7 +3,7 @@ mod keymap;
 mod ui;
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use app::TuiApp;
 use base64::Engine as _;
@@ -42,6 +42,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
     let mut evt_rx = core.evt_tx.subscribe();
+    let mut last_flash_toggle = Instant::now();
 
     loop {
         loop {
@@ -52,20 +53,40 @@ async fn main() -> anyhow::Result<()> {
                     CoreEvent::WorkspaceDiffUpdated { id, file, diff } => {
                         app.set_workspace_diff(id, file, diff)
                     }
-                    CoreEvent::TerminalOutput { id, kind, data_b64 } => {
+                    CoreEvent::TerminalOutput {
+                        id,
+                        kind: _,
+                        data_b64,
+                        tab_id,
+                        ..
+                    } => {
                         if let Ok(bytes) =
                             base64::engine::general_purpose::STANDARD.decode(data_b64)
                         {
-                            app.append_terminal_bytes(id, kind, &bytes);
+                            let tid = tab_id.unwrap_or_else(|| "shell".to_string());
+                            app.append_terminal_bytes(id, &tid, &bytes);
                         }
                     }
-                    CoreEvent::TerminalExited { id, kind, code } => {
+                    CoreEvent::TerminalExited {
+                        id,
+                        kind: _,
+                        code,
+                        tab_id,
+                        ..
+                    } => {
                         let msg = format!("\r\n[terminal exited: {:?}]\r\n", code);
-                        app.append_terminal_bytes(id, kind, msg.as_bytes());
+                        let tid = tab_id.unwrap_or_else(|| "shell".to_string());
+                        app.append_terminal_bytes(id, &tid, msg.as_bytes());
                     }
-                    CoreEvent::TerminalStarted { id, kind } => {
-                        app.reset_terminal(id, kind);
-                        app.append_terminal_bytes(id, kind, b"[terminal started]\r\n");
+                    CoreEvent::TerminalStarted {
+                        id,
+                        kind: _,
+                        tab_id,
+                        ..
+                    } => {
+                        let tid = tab_id.unwrap_or_else(|| "shell".to_string());
+                        app.reset_terminal(id, &tid);
+                        app.append_terminal_bytes(id, &tid, b"[terminal started]\r\n");
                     }
                     _ => {}
                 },
@@ -83,16 +104,19 @@ async fn main() -> anyhow::Result<()> {
         if let Route::Workspace { id } = app.route {
             if let Ok(size) = terminal.size() {
                 let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
-                let inner = ui::screens::workspace::terminal_content_rect(area);
+                let inner = ui::screens::workspace::terminal_content_rect(area, app.focus);
                 let cols = inner.width.max(1);
                 let rows = inner.height.max(1);
-                if app.should_send_resize(id, app.ws_active_terminal, cols, rows) {
-                    app.resize_terminal_parser(id, app.ws_active_terminal, cols, rows);
+                let tid = app.active_tab_id();
+                let kind = app.active_tab_kind();
+                if app.should_send_resize(id, &tid, cols, rows) {
+                    app.resize_terminal_parser(id, &tid, cols, rows);
                     let _ = core
                         .cmd_tx
                         .send(Command::ResizeTerminal {
                             id,
-                            kind: app.ws_active_terminal,
+                            kind,
+                            tab_id: Some(tid),
                             cols,
                             rows,
                         })
@@ -101,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        if event::poll(Duration::from_millis(250))? {
+        if event::poll(Duration::from_millis(16))? {
             match event::read()? {
                 Event::Key(key) => {
                     if matches!(key.kind, KeyEventKind::Release) {
@@ -112,6 +136,7 @@ async fn main() -> anyhow::Result<()> {
                         && !app.is_adding_workspace()
                         && !app.is_confirming_delete()
                         && !app.is_renaming_workspace()
+                        && !app.is_renaming_tab()
                         && !matches!(app.focus, app::Focus::WsTerminal)
                     {
                         break;
@@ -166,13 +191,11 @@ async fn main() -> anyhow::Result<()> {
                             } else {
                                 match key.code {
                                     KeyCode::Esc => {
-                                        app.route = Route::Home;
-                                        app.focus = app::Focus::HomeGrid;
+                                        app.go_home();
                                     }
                                     KeyCode::Enter => {
                                         if let Some(id) = app.selected_workspace_id() {
-                                            app.route = Route::Workspace { id };
-                                            app.focus = app::Focus::WsTerminalTabs;
+                                            app.open_workspace(id);
                                             let _ =
                                                 core.cmd_tx.send(Command::RefreshGit { id }).await;
                                         }
@@ -227,6 +250,25 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                         Route::Workspace { id } => {
+                            if app.is_renaming_tab() {
+                                match key.code {
+                                    KeyCode::Esc => app.cancel_rename_tab(),
+                                    KeyCode::Enter => app.apply_rename_tab(),
+                                    KeyCode::Backspace => {
+                                        if let Some(input) = app.rename_tab_input_mut() {
+                                            input.pop();
+                                        }
+                                    }
+                                    KeyCode::Char(c) => {
+                                        if let Some(input) = app.rename_tab_input_mut() {
+                                            input.push(c);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                continue;
+                            }
+
                             if app.is_renaming_workspace() {
                                 match key.code {
                                     KeyCode::Esc => app.cancel_rename_workspace(),
@@ -257,8 +299,7 @@ async fn main() -> anyhow::Result<()> {
                                 if matches!(app.focus, app::Focus::WsTerminal) {
                                     app.focus = app::Focus::WsTerminalTabs;
                                 } else {
-                                    app.route = Route::Home;
-                                    app.focus = app::Focus::HomeGrid;
+                                    app.go_home();
                                 }
                                 continue;
                             }
@@ -271,7 +312,8 @@ async fn main() -> anyhow::Result<()> {
                                         .cmd_tx
                                         .send(Command::SendTerminalInput {
                                             id,
-                                            kind: app.ws_active_terminal,
+                                            kind: app.active_tab_kind(),
+                                            tab_id: Some(app.active_tab_id()),
                                             data_b64: base64::engine::general_purpose::STANDARD
                                                 .encode(bytes),
                                         })
@@ -294,7 +336,8 @@ async fn main() -> anyhow::Result<()> {
                                             .cmd_tx
                                             .send(Command::StartTerminal {
                                                 id,
-                                                kind: app.ws_active_terminal,
+                                                kind: app.active_tab_kind(),
+                                                tab_id: Some(app.active_tab_id()),
                                                 cmd: Vec::new(),
                                             })
                                             .await;
@@ -348,27 +391,61 @@ async fn main() -> anyhow::Result<()> {
                                     app.begin_rename_workspace();
                                 }
                                 KeyCode::Char('1') => {
-                                    app.ws_active_terminal = TerminalKind::Agent;
+                                    app.set_active_tab_index(0);
                                 }
                                 KeyCode::Char('2') => {
-                                    app.ws_active_terminal = TerminalKind::Shell;
+                                    app.set_active_tab_index(1);
                                 }
                                 KeyCode::Right | KeyCode::Char('l')
                                     if matches!(app.focus, app::Focus::WsTerminalTabs) =>
                                 {
-                                    app.ws_active_terminal = TerminalKind::Shell;
+                                    app.move_terminal_tab(1);
                                 }
                                 KeyCode::Left | KeyCode::Char('h')
                                     if matches!(app.focus, app::Focus::WsTerminalTabs) =>
                                 {
-                                    app.ws_active_terminal = TerminalKind::Agent;
+                                    app.move_terminal_tab(-1);
+                                }
+                                KeyCode::Char('n')
+                                    if matches!(app.focus, app::Focus::WsTerminalTabs) =>
+                                {
+                                    app.add_shell_tab();
+                                    let _ = core
+                                        .cmd_tx
+                                        .send(Command::StartTerminal {
+                                            id,
+                                            kind: TerminalKind::Shell,
+                                            tab_id: Some(app.active_tab_id()),
+                                            cmd: Vec::new(),
+                                        })
+                                        .await;
+                                }
+                                KeyCode::Char('x')
+                                    if matches!(app.focus, app::Focus::WsTerminalTabs) =>
+                                {
+                                    if let Some(closed) = app.close_active_tab() {
+                                        let _ = core
+                                            .cmd_tx
+                                            .send(Command::StopTerminal {
+                                                id,
+                                                kind: closed.kind,
+                                                tab_id: Some(closed.id),
+                                            })
+                                            .await;
+                                    }
+                                }
+                                KeyCode::Char('r')
+                                    if matches!(app.focus, app::Focus::WsTerminalTabs) =>
+                                {
+                                    app.begin_rename_tab();
                                 }
                                 KeyCode::Char('a') => {
                                     let _ = core
                                         .cmd_tx
                                         .send(Command::StartTerminal {
                                             id,
-                                            kind: app.ws_active_terminal,
+                                            kind: app.active_tab_kind(),
+                                            tab_id: Some(app.active_tab_id()),
                                             cmd: Vec::new(),
                                         })
                                         .await;
@@ -379,7 +456,8 @@ async fn main() -> anyhow::Result<()> {
                                         .cmd_tx
                                         .send(Command::StopTerminal {
                                             id,
-                                            kind: app.ws_active_terminal,
+                                            kind: app.active_tab_kind(),
+                                            tab_id: Some(app.active_tab_id()),
                                         })
                                         .await;
                                 }
@@ -388,7 +466,8 @@ async fn main() -> anyhow::Result<()> {
                                         .cmd_tx
                                         .send(Command::StartTerminal {
                                             id,
-                                            kind: TerminalKind::Shell,
+                                            kind: app.active_tab_kind(),
+                                            tab_id: Some(app.active_tab_id()),
                                             cmd: Vec::new(),
                                         })
                                         .await;
@@ -398,7 +477,8 @@ async fn main() -> anyhow::Result<()> {
                                         .cmd_tx
                                         .send(Command::StopTerminal {
                                             id,
-                                            kind: TerminalKind::Shell,
+                                            kind: app.active_tab_kind(),
+                                            tab_id: Some(app.active_tab_id()),
                                         })
                                         .await;
                                 }
@@ -414,7 +494,10 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        app.flash_on = !app.flash_on;
+        if last_flash_toggle.elapsed() >= Duration::from_millis(250) {
+            app.flash_on = !app.flash_on;
+            last_flash_toggle = Instant::now();
+        }
     }
 
     disable_raw_mode()?;
@@ -591,8 +674,7 @@ async fn handle_mouse(
                 ) {
                     app.set_home_selection(idx);
                     if let Some(id) = app.selected_workspace_id() {
-                        app.route = Route::Workspace { id };
-                        app.focus = app::Focus::WsTerminalTabs;
+                        app.open_workspace(id);
                         let _ = cmd_tx.send(Command::RefreshGit { id }).await;
                     }
                 }
@@ -608,9 +690,9 @@ async fn handle_mouse(
                         ui::screens::workspace::WorkspaceHit::Header => {
                             app.focus = app::Focus::WsHeader;
                         }
-                        ui::screens::workspace::WorkspaceHit::TerminalTabs(kind) => {
+                        ui::screens::workspace::WorkspaceHit::TerminalTab(idx) => {
                             app.focus = app::Focus::WsTerminalTabs;
-                            app.ws_active_terminal = kind;
+                            app.set_active_tab_index(idx);
                         }
                         ui::screens::workspace::WorkspaceHit::TerminalPane => {
                             app.focus = app::Focus::WsTerminal;

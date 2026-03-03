@@ -79,20 +79,28 @@ pub enum Command {
     StartTerminal {
         id: WorkspaceId,
         kind: TerminalKind,
+        #[serde(default)]
+        tab_id: Option<String>,
         cmd: Vec<String>,
     },
     StopTerminal {
         id: WorkspaceId,
         kind: TerminalKind,
+        #[serde(default)]
+        tab_id: Option<String>,
     },
     SendTerminalInput {
         id: WorkspaceId,
         kind: TerminalKind,
+        #[serde(default)]
+        tab_id: Option<String>,
         data_b64: String,
     },
     ResizeTerminal {
         id: WorkspaceId,
         kind: TerminalKind,
+        #[serde(default)]
+        tab_id: Option<String>,
         cols: u16,
         rows: u16,
     },
@@ -119,15 +127,21 @@ pub enum Event {
     TerminalStarted {
         id: WorkspaceId,
         kind: TerminalKind,
+        #[serde(default)]
+        tab_id: Option<String>,
     },
     TerminalExited {
         id: WorkspaceId,
         kind: TerminalKind,
+        #[serde(default)]
+        tab_id: Option<String>,
         code: Option<i32>,
     },
     TerminalOutput {
         id: WorkspaceId,
         kind: TerminalKind,
+        #[serde(default)]
+        tab_id: Option<String>,
         data_b64: String,
     },
     Error {

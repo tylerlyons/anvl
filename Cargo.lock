@@ -1351,6 +1351,8 @@ dependencies = [
  "multiws_core",
  "protocol",
  "ratatui",
+ "serde",
+ "serde_json",
  "server",
  "tokio",
  "unicode-width 0.2.0",

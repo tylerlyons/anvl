@@ -16,7 +16,7 @@ use protocol::{AttentionLevel, Command, Event, WorkspaceSummary};
 use state::{AppState, Workspace};
 use uuid::Uuid;
 use workspace::git::{diff_file, refresh_git};
-use workspace::terminal::{start_terminal, TerminalOutput, TerminalSession};
+use workspace::terminal::{start_terminal, TerminalOutput};
 
 #[derive(Clone)]
 pub struct CoreHandle {
@@ -130,7 +130,12 @@ pub fn spawn_core() -> CoreHandle {
                         }
                     }
                 }
-                Command::StartTerminal { id, kind, cmd } => {
+                Command::StartTerminal {
+                    id,
+                    kind,
+                    tab_id,
+                    cmd,
+                } => {
                     if let Some(ws) = state.workspaces.get_mut(&id) {
                         let cwd = ws.path.clone();
                         let command = if cmd.is_empty() {
@@ -139,17 +144,37 @@ pub fn spawn_core() -> CoreHandle {
                             cmd
                         };
 
-                        if let Some(existing) = terminal_slot_mut(ws, kind).take() {
-                            let _ = existing.stop().await;
+                        let tid = normalize_tab_id(kind, tab_id);
+                        match kind {
+                            protocol::TerminalKind::Agent => {
+                                if let Some(existing) = ws.terminals.agent.take() {
+                                    let _ = existing.stop().await;
+                                }
+                            }
+                            protocol::TerminalKind::Shell => {
+                                if let Some(existing) = ws.terminals.shells.remove(&tid) {
+                                    let _ = existing.stop().await;
+                                }
+                            }
                         }
 
                         match start_terminal(cwd, command).await {
                             Ok((session, mut out_rx)) => {
-                                *terminal_slot_mut(ws, kind) = Some(session);
+                                match kind {
+                                    protocol::TerminalKind::Agent => ws.terminals.agent = Some(session),
+                                    protocol::TerminalKind::Shell => {
+                                        ws.terminals.shells.insert(tid.clone(), session);
+                                    }
+                                }
                                 ws.last_activity = Instant::now();
-                                let _ = evt_tx_task.send(Event::TerminalStarted { id, kind });
+                                let _ = evt_tx_task.send(Event::TerminalStarted {
+                                    id,
+                                    kind,
+                                    tab_id: Some(tid.clone()),
+                                });
 
                                 let evt_tx_outputs = evt_tx_task.clone();
+                                let out_tab_id = tid.clone();
                                 tokio::spawn(async move {
                                     while let Some(out) = out_rx.recv().await {
                                         match out {
@@ -161,12 +186,17 @@ pub fn spawn_core() -> CoreHandle {
                                                     evt_tx_outputs.send(Event::TerminalOutput {
                                                         id,
                                                         kind,
+                                                        tab_id: Some(out_tab_id.clone()),
                                                         data_b64,
                                                     });
                                             }
                                             TerminalOutput::Exited(code) => {
-                                                let _ = evt_tx_outputs
-                                                    .send(Event::TerminalExited { id, kind, code });
+                                                let _ = evt_tx_outputs.send(Event::TerminalExited {
+                                                    id,
+                                                    kind,
+                                                    tab_id: Some(out_tab_id.clone()),
+                                                    code,
+                                                });
                                                 break;
                                             }
                                         }
@@ -183,21 +213,37 @@ pub fn spawn_core() -> CoreHandle {
                         }
                     }
                 }
-                Command::StopTerminal { id, kind } => {
+                Command::StopTerminal { id, kind, tab_id } => {
                     if let Some(ws) = state.workspaces.get_mut(&id) {
-                        if let Some(session) = terminal_slot_mut(ws, kind).take() {
+                        let tid = normalize_tab_id(kind, tab_id);
+                        let stopped = match kind {
+                            protocol::TerminalKind::Agent => ws.terminals.agent.take(),
+                            protocol::TerminalKind::Shell => ws.terminals.shells.remove(&tid),
+                        };
+                        if let Some(session) = stopped {
                             let _ = session.stop().await;
                             let _ = evt_tx_task.send(Event::TerminalExited {
                                 id,
                                 kind,
+                                tab_id: Some(tid),
                                 code: None,
                             });
                         }
                     }
                 }
-                Command::SendTerminalInput { id, kind, data_b64 } => {
+                Command::SendTerminalInput {
+                    id,
+                    kind,
+                    tab_id,
+                    data_b64,
+                } => {
                     if let Some(ws) = state.workspaces.get_mut(&id) {
-                        if let Some(session) = terminal_slot_mut(ws, kind).as_mut() {
+                        let tid = normalize_tab_id(kind, tab_id);
+                        let session = match kind {
+                            protocol::TerminalKind::Agent => ws.terminals.agent.as_mut(),
+                            protocol::TerminalKind::Shell => ws.terminals.shells.get_mut(&tid),
+                        };
+                        if let Some(session) = session {
                             if let Ok(bytes) =
                                 base64::engine::general_purpose::STANDARD.decode(data_b64)
                             {
@@ -209,11 +255,17 @@ pub fn spawn_core() -> CoreHandle {
                 Command::ResizeTerminal {
                     id,
                     kind,
+                    tab_id,
                     cols,
                     rows,
                 } => {
                     if let Some(ws) = state.workspaces.get_mut(&id) {
-                        if let Some(session) = terminal_slot_mut(ws, kind).as_mut() {
+                        let tid = normalize_tab_id(kind, tab_id);
+                        let session = match kind {
+                            protocol::TerminalKind::Agent => ws.terminals.agent.as_mut(),
+                            protocol::TerminalKind::Shell => ws.terminals.shells.get_mut(&tid),
+                        };
+                        if let Some(session) = session {
                             let _ = session.resize(cols, rows).await;
                         }
                     }
@@ -260,7 +312,7 @@ fn workspace_summaries(state: &AppState) -> Vec<WorkspaceSummary> {
             dirty_files: ws.git.changed.len(),
             attention: ws.attention,
             agent_running: ws.terminals.agent.is_some(),
-            shell_running: ws.terminals.shell.is_some(),
+            shell_running: !ws.terminals.shells.is_empty(),
             last_activity_unix_ms: unix_ms_now(),
         })
         .collect::<Vec<_>>()
@@ -273,21 +325,20 @@ fn unix_ms_now() -> u64 {
         .unwrap_or(0)
 }
 
-fn terminal_slot_mut(
-    ws: &mut Workspace,
-    kind: protocol::TerminalKind,
-) -> &mut Option<TerminalSession> {
-    match kind {
-        protocol::TerminalKind::Agent => &mut ws.terminals.agent,
-        protocol::TerminalKind::Shell => &mut ws.terminals.shell,
-    }
-}
-
 fn default_terminal_cmd(kind: protocol::TerminalKind) -> Vec<String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "zsh".to_string());
     match kind {
         protocol::TerminalKind::Agent => vec![shell.clone(), "-i".to_string()],
         protocol::TerminalKind::Shell => vec![shell, "-i".to_string()],
+    }
+}
+
+fn normalize_tab_id(kind: protocol::TerminalKind, tab_id: Option<String>) -> String {
+    match kind {
+        protocol::TerminalKind::Agent => "agent".to_string(),
+        protocol::TerminalKind::Shell => tab_id
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "shell".to_string()),
     }
 }
 

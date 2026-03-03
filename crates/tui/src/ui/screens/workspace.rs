@@ -12,7 +12,7 @@ use protocol::Route;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceHit {
     Header,
-    TerminalTabs(protocol::TerminalKind),
+    TerminalTab(usize),
     TerminalPane,
     FilesList(usize),
     DiffPane,
@@ -25,20 +25,29 @@ struct WorkspaceLayout {
     terminal_pane: Rect,
     git_files: Rect,
     git_diff: Rect,
+    footer: Rect,
 }
 
-fn layout(area: Rect) -> WorkspaceLayout {
+fn layout(area: Rect, focus: crate::app::Focus) -> WorkspaceLayout {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .constraints([Constraint::Length(3), Constraint::Min(5), Constraint::Length(2)])
         .split(area);
     let body = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .constraints(match focus {
+            crate::app::Focus::WsTerminal | crate::app::Focus::WsTerminalTabs => {
+                [Constraint::Percentage(72), Constraint::Percentage(28)]
+            }
+            crate::app::Focus::WsFiles | crate::app::Focus::WsDiff => {
+                [Constraint::Percentage(35), Constraint::Percentage(65)]
+            }
+            _ => [Constraint::Percentage(55), Constraint::Percentage(45)],
+        })
         .split(chunks[1]);
     let terminal_area = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(3)])
+        .constraints([Constraint::Length(5), Constraint::Min(3)])
         .split(body[0]);
     let git_area = Layout::default()
         .direction(Direction::Horizontal)
@@ -51,11 +60,12 @@ fn layout(area: Rect) -> WorkspaceLayout {
         terminal_pane: terminal_area[1],
         git_files: git_area[0],
         git_diff: git_area[1],
+        footer: chunks[2],
     }
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
-    let l = layout(area);
+    let l = layout(area, app.focus);
 
     let focused_border = |focused: bool| {
         if focused {
@@ -156,63 +166,88 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let (agent_running, shell_running) = ws_summary
         .map(|w| (w.agent_running, w.shell_running))
         .unwrap_or((false, false));
-    let tabs = format!(
-        "{} {} | {} {} | switch: `1`/`2`   start: `a`/`s` stop: `A`/`S`",
-        if app.ws_active_terminal == protocol::TerminalKind::Agent {
-            "[1] Agent*"
+    let tab_rects = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(
+            app.ws_tabs
+                .iter()
+                .map(|_| Constraint::Ratio(1, app.ws_tabs.len().max(1) as u32))
+                .collect::<Vec<_>>(),
+        )
+        .split(l.terminal_tabs);
+    let tabs_focused = app.focus == crate::app::Focus::WsTerminalTabs;
+    let selected_style = Style::default()
+        .fg(Color::LightGreen)
+        .add_modifier(Modifier::BOLD);
+    for (i, tab) in app.ws_tabs.iter().enumerate() {
+        let running = match tab.kind {
+            protocol::TerminalKind::Agent => agent_running,
+            protocol::TerminalKind::Shell => shell_running,
+        };
+        let label = if i == app.ws_active_tab {
+            app.rename_tab_input
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| tab.label.clone())
         } else {
-            "[1] Agent"
-        },
-        if agent_running { "running" } else { "stopped" },
-        if app.ws_active_terminal == protocol::TerminalKind::Shell {
-            "[2] Shell*"
-        } else {
-            "[2] Shell"
-        },
-        if shell_running { "running" } else { "stopped" },
-    );
-    frame.render_widget(
-        Paragraph::new(tabs).block(
-            Block::default()
-                .title("Terminal Tabs")
-                .borders(Borders::ALL)
-                .border_style(focused_border(
-                    app.focus == crate::app::Focus::WsTerminalTabs,
-                )),
-        ),
-        l.terminal_tabs,
-    );
-
-    let terminal_lines = ws_id
-        .map(|id| app.terminal_lines(id, app.ws_active_terminal))
-        .unwrap_or_else(|| vec![Line::from("No terminal output yet.")]);
-    frame.render_widget(
-        Paragraph::new(terminal_lines)
+            tab.label.clone()
+        };
+        frame.render_widget(
+            Paragraph::new(format!(
+                "{}\n{}\n[h/l] [n new] [x close] [r rename]",
+                label,
+                if running { "running" } else { "stopped" }
+            ))
             .block(
                 Block::default()
-                    .title("Terminal")
+                    .title(format!("{}", i + 1))
                     .borders(Borders::ALL)
-                    .border_style(focused_border(app.focus == crate::app::Focus::WsTerminal)),
+                    .border_style(if i == app.ws_active_tab {
+                        selected_style
+                    } else {
+                        focused_border(tabs_focused)
+                    }),
             ),
+            tab_rects[i],
+        );
+    }
+
+    let terminal_lines = ws_id
+        .map(|id| app.terminal_lines(id, &app.active_tab_id()))
+        .unwrap_or_else(|| vec![Line::from("No terminal output yet.")]);
+    frame.render_widget(
+        Paragraph::new(terminal_lines).block(
+            Block::default()
+                .title("Terminal")
+                .borders(Borders::ALL)
+                .border_style(focused_border(app.focus == crate::app::Focus::WsTerminal)),
+        ),
         l.terminal_pane,
+    );
+
+    let footer = "Tab/S-Tab focus | h/l or <-/-> tab | n new tab | x close | r rename tab | e rename workspace | a start | A stop | Esc Home, then n = new workspace";
+    frame.render_widget(
+        Paragraph::new(footer)
+            .block(Block::default().borders(Borders::TOP))
+            .style(Style::default().fg(Color::Gray)),
+        l.footer,
     );
 }
 
 pub fn hit_test(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<WorkspaceHit> {
-    let l = layout(area);
+    let l = layout(area, app.focus);
 
     let point_inside = |r: Rect| x >= r.x && y >= r.y && x < r.right() && y < r.bottom();
     if point_inside(l.header) {
         return Some(WorkspaceHit::Header);
     }
     if point_inside(l.terminal_tabs) {
-        let mid = l.terminal_tabs.x + l.terminal_tabs.width / 2;
-        let kind = if x < mid {
-            protocol::TerminalKind::Agent
-        } else {
-            protocol::TerminalKind::Shell
-        };
-        return Some(WorkspaceHit::TerminalTabs(kind));
+        if app.ws_tabs.is_empty() {
+            return Some(WorkspaceHit::TerminalTab(0));
+        }
+        let tab_w = (l.terminal_tabs.width / app.ws_tabs.len() as u16).max(1);
+        let idx = ((x.saturating_sub(l.terminal_tabs.x)) / tab_w) as usize;
+        return Some(WorkspaceHit::TerminalTab(idx.min(app.ws_tabs.len() - 1)));
     }
     if point_inside(l.terminal_pane) {
         return Some(WorkspaceHit::TerminalPane);
@@ -244,8 +279,8 @@ pub fn hit_test(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<WorkspaceHit
     None
 }
 
-pub fn terminal_content_rect(area: Rect) -> Rect {
-    let pane = layout(area).terminal_pane;
+pub fn terminal_content_rect(area: Rect, focus: crate::app::Focus) -> Rect {
+    let pane = layout(area, focus).terminal_pane;
     Rect::new(
         pane.x.saturating_add(1),
         pane.y.saturating_add(1),

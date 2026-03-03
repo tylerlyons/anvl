@@ -1,5 +1,6 @@
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Color, Style},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
@@ -8,12 +9,25 @@ use crate::app::TuiApp;
 use crate::ui::widgets::tile_grid;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(5), Constraint::Length(2)])
+        .split(area);
+
     tile_grid::render(
         frame,
-        area,
+        chunks[0],
         &app.workspaces,
         app.home_selected,
         app.flash_on,
+    );
+
+    let footer = "Home: arrows/hjkl move | Enter open | n add workspace | D delete workspace | ! toggle attention | q quit";
+    frame.render_widget(
+        Paragraph::new(footer)
+            .block(Block::default().borders(Borders::TOP))
+            .style(Style::default().fg(Color::Gray)),
+        chunks[1],
     );
 
     if let Some(path_input) = &app.add_workspace_path_input {
