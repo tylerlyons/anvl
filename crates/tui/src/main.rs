@@ -82,7 +82,11 @@ async fn main() -> Result<()> {
         }
         LaunchMode::AttachSession { name } => {
             let entry = get_session(&name)?.ok_or_else(|| {
-                anyhow!("session '{}' not found. create it with: flow -s {}", name, name)
+                anyhow!(
+                    "session '{}' not found. create it with: flow -s {}",
+                    name,
+                    name
+                )
             })?;
             if !port_open(entry.port) {
                 return Err(anyhow!(
@@ -201,7 +205,12 @@ fn parse_cli(args: Vec<String>) -> Result<Cli> {
         });
     }
 
-    if detach && matches!(mode, LaunchMode::RemoveSession { .. } | LaunchMode::ListSessions) {
+    if detach
+        && matches!(
+            mode,
+            LaunchMode::RemoveSession { .. } | LaunchMode::ListSessions
+        )
+    {
         return Err(anyhow!(
             "--detach is only valid with session create/attach (-s or -a)"
         ));
@@ -360,8 +369,10 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 match key.code {
                                     KeyCode::Char('y') | KeyCode::Char('Y') => {
                                         if let Some(id) = app.take_delete_workspace() {
-                                            let _ =
-                                                backend.cmd_tx.send(Command::RemoveWorkspace { id }).await;
+                                            let _ = backend
+                                                .cmd_tx
+                                                .send(Command::RemoveWorkspace { id })
+                                                .await;
                                         }
                                     }
                                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
@@ -410,14 +421,22 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 .cmd_tx
                                                 .send(Command::RefreshGit { id })
                                                 .await;
-                                            let _ =
-                                                backend.cmd_tx.send(Command::ClearAttention { id }).await;
+                                            let _ = backend
+                                                .cmd_tx
+                                                .send(Command::ClearAttention { id })
+                                                .await;
                                         }
                                     }
-                                    KeyCode::Down | KeyCode::Char('j') => app.move_home_selection(1),
+                                    KeyCode::Down | KeyCode::Char('j') => {
+                                        app.move_home_selection(1)
+                                    }
                                     KeyCode::Up | KeyCode::Char('k') => app.move_home_selection(-1),
-                                    KeyCode::Left | KeyCode::Char('h') => app.move_home_selection(-1),
-                                    KeyCode::Right | KeyCode::Char('l') => app.move_home_selection(1),
+                                    KeyCode::Left | KeyCode::Char('h') => {
+                                        app.move_home_selection(-1)
+                                    }
+                                    KeyCode::Right | KeyCode::Char('l') => {
+                                        app.move_home_selection(1)
+                                    }
                                     KeyCode::Char('n') => {
                                         let cwd = std::env::current_dir()
                                             .unwrap_or_else(|_| PathBuf::from("."))
@@ -449,8 +468,10 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     }
                                     KeyCode::Char('g') => {
                                         if let Some(id) = app.selected_workspace_id() {
-                                            let _ =
-                                                backend.cmd_tx.send(Command::RefreshGit { id }).await;
+                                            let _ = backend
+                                                .cmd_tx
+                                                .send(Command::RefreshGit { id })
+                                                .await;
                                         }
                                     }
                                     _ => {}
@@ -512,7 +533,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 continue;
                             }
 
-                            if matches!(app.focus, app::Focus::WsTerminal) && key.code != KeyCode::Tab
+                            if matches!(app.focus, app::Focus::WsTerminal)
+                                && key.code != KeyCode::Tab
                             {
                                 if let Some(bytes) = key_to_terminal_bytes(key) {
                                     let _ = backend
@@ -558,7 +580,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         app.focus = cycle_workspace_focus(app.focus);
                                     }
                                 }
-                                KeyCode::BackTab => app.focus = cycle_workspace_focus_reverse(app.focus),
+                                KeyCode::BackTab => {
+                                    app.focus = cycle_workspace_focus_reverse(app.focus)
+                                }
                                 KeyCode::Char('g') => {
                                     let _ = backend.cmd_tx.send(Command::RefreshGit { id }).await;
                                 }
@@ -607,7 +631,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 {
                                     app.move_terminal_tab(-1);
                                 }
-                                KeyCode::Char('n') if matches!(app.focus, app::Focus::WsTerminalTabs) => {
+                                KeyCode::Char('n')
+                                    if matches!(app.focus, app::Focus::WsTerminalTabs) =>
+                                {
                                     app.add_shell_tab();
                                     let _ = backend
                                         .cmd_tx
@@ -619,7 +645,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         })
                                         .await;
                                 }
-                                KeyCode::Char('x') if matches!(app.focus, app::Focus::WsTerminalTabs) => {
+                                KeyCode::Char('x')
+                                    if matches!(app.focus, app::Focus::WsTerminalTabs) =>
+                                {
                                     if let Some(closed) = app.close_active_tab() {
                                         let _ = backend
                                             .cmd_tx
@@ -631,7 +659,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             .await;
                                     }
                                 }
-                                KeyCode::Char('r') if matches!(app.focus, app::Focus::WsTerminalTabs) => {
+                                KeyCode::Char('r')
+                                    if matches!(app.focus, app::Focus::WsTerminalTabs) =>
+                                {
                                     app.begin_rename_tab();
                                 }
                                 KeyCode::Char('a') => {
@@ -710,7 +740,11 @@ fn list_sessions() -> Result<()> {
 
     println!("sessions:");
     for s in registry.sessions {
-        let state = if port_open(s.port) { "running" } else { "stale" };
+        let state = if port_open(s.port) {
+            "running"
+        } else {
+            "stale"
+        };
         println!("- {}  (port {} pid {} {})", s.name, s.port, s.pid, state);
     }
     Ok(())
@@ -720,19 +754,38 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
     match evt {
         CoreEvent::WorkspaceList { items } => app.set_workspaces(items),
         CoreEvent::WorkspaceGitUpdated { id, git } => app.set_workspace_git(id, git),
-        CoreEvent::WorkspaceDiffUpdated { id, file, diff } => app.set_workspace_diff(id, file, diff),
-        CoreEvent::TerminalOutput { id, kind: _, data_b64, tab_id, .. } => {
+        CoreEvent::WorkspaceDiffUpdated { id, file, diff } => {
+            app.set_workspace_diff(id, file, diff)
+        }
+        CoreEvent::TerminalOutput {
+            id,
+            kind: _,
+            data_b64,
+            tab_id,
+            ..
+        } => {
             if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data_b64) {
                 let tid = tab_id.unwrap_or_else(|| "shell".to_string());
                 app.append_terminal_bytes(id, &tid, &bytes);
             }
         }
-        CoreEvent::TerminalExited { id, kind: _, code, tab_id, .. } => {
+        CoreEvent::TerminalExited {
+            id,
+            kind: _,
+            code,
+            tab_id,
+            ..
+        } => {
             let msg = format!("\r\n[terminal exited: {:?}]\r\n", code);
             let tid = tab_id.unwrap_or_else(|| "shell".to_string());
             app.append_terminal_bytes(id, &tid, msg.as_bytes());
         }
-        CoreEvent::TerminalStarted { id, kind: _, tab_id, .. } => {
+        CoreEvent::TerminalStarted {
+            id,
+            kind: _,
+            tab_id,
+            ..
+        } => {
             let tid = tab_id.unwrap_or_else(|| "shell".to_string());
             app.reset_terminal(id, &tid);
             app.append_terminal_bytes(id, &tid, b"[terminal started]\r\n");
@@ -901,9 +954,13 @@ async fn handle_mouse(
                     return;
                 }
 
-                if let Some(idx) =
-                    ui::widgets::tile_grid::index_at(area, mouse.column, mouse.row, app.workspaces.len())
-                {
+                let grid = ui::screens::home::grid_rect(area);
+                if let Some(idx) = ui::widgets::tile_grid::index_at(
+                    grid,
+                    mouse.column,
+                    mouse.row,
+                    app.workspaces.len(),
+                ) {
                     app.set_home_selection(idx);
                     if let Some(id) = app.selected_workspace_id() {
                         app.open_workspace(id);
@@ -1023,9 +1080,14 @@ fn delete_session(name: &str) -> Result<()> {
         return Ok(());
     }
 
-    let _ = OsCommand::new("kill")
-        .arg(entry.pid.to_string())
-        .status();
+    if is_expected_daemon_process(&entry) {
+        let _ = OsCommand::new("kill").arg(entry.pid.to_string()).status();
+    } else {
+        println!(
+            "warning: pid {} does not look like session daemon '{}'; skipping kill and removing registry entry only",
+            entry.pid, entry.name
+        );
+    }
 
     registry.sessions.retain(|s| s.name != name);
     save_registry(&registry)?;
@@ -1045,7 +1107,12 @@ fn spawn_daemon_process(name: &str, port: u16) -> Result<u32> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .with_context(|| format!("failed to spawn daemon for session '{}', port {}", name, port))?;
+        .with_context(|| {
+            format!(
+                "failed to spawn daemon for session '{}', port {}",
+                name, port
+            )
+        })?;
     Ok(child.id())
 }
 
@@ -1066,6 +1133,26 @@ fn port_open(port: u16) -> bool {
         Err(_) => return false,
     };
     TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok()
+}
+
+fn is_expected_daemon_process(entry: &SessionEntry) -> bool {
+    let output = match OsCommand::new("ps")
+        .arg("-p")
+        .arg(entry.pid.to_string())
+        .arg("-o")
+        .arg("command=")
+        .output()
+    {
+        Ok(out) => out,
+        Err(_) => return false,
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let cmdline = String::from_utf8_lossy(&output.stdout);
+    cmdline.contains("--run-daemon")
+        && cmdline.contains(&format!("--port {}", entry.port))
+        && cmdline.contains(&format!("--session-name {}", entry.name))
 }
 
 fn find_free_port(start: u16, end: u16) -> Option<u16> {

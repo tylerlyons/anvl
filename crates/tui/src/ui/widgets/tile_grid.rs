@@ -90,9 +90,7 @@ pub fn render(
 
         // Pulse the body emphasis too for attention tiles.
         let body_style = if matches!(ws.attention, AttentionLevel::NeedsInput) && flash_on {
-            Style::default()
-                .fg(orange)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(orange).add_modifier(Modifier::BOLD)
         } else if matches!(ws.attention, AttentionLevel::Error) && flash_on {
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
         } else {

@@ -230,6 +230,9 @@ pub fn spawn_core() -> CoreHandle {
                                                                 level: AttentionLevel::NeedsInput,
                                                             })
                                                             .await;
+                                                        // Prevent stale prompt text from re-triggering
+                                                        // until fresh prompt output appears.
+                                                        recent_agent_output.clear();
                                                     }
                                                     idle_armed = true;
                                                 }

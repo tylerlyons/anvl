@@ -10,15 +10,7 @@ use crate::app::TuiApp;
 use crate::ui::widgets::tile_grid;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(2),
-        ])
-        .split(area);
+    let chunks = home_chunks(area);
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -143,4 +135,21 @@ pub fn add_modal_rect(area: Rect) -> Rect {
 
 pub fn delete_modal_rect(area: Rect) -> Rect {
     centered_rect(area, 56, 7)
+}
+
+pub fn grid_rect(area: Rect) -> Rect {
+    home_chunks(area)[2]
+}
+
+fn home_chunks(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(2),
+        ])
+        .split(area)
+        .to_vec()
 }
