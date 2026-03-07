@@ -38,7 +38,7 @@ fn render_dashboard(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let mut spans = Vec::new();
     spans.extend(dashboard_badge(needs_input, "\u{26A0}", "input", ORANGE));
     spans.extend(dashboard_badge(errors, "\u{2716}", "error", Color::Red));
-    spans.extend(dashboard_badge(dirty, "\u{25C8}", "dirty", Color::Yellow));
+    spans.extend(dashboard_badge(dirty, "\u{25C8}", "changes", Color::Yellow));
     spans.extend(dashboard_badge(running_agents, "\u{25CF}", "agents", Color::Green));
 
     let dashboard = Paragraph::new(Line::from(spans)).block(
