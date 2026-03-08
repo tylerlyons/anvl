@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     HomeGrid,
-    WsHeader,
     WsFiles,
     WsLog,
     WsBranches,
@@ -294,8 +293,8 @@ impl TuiApp {
         self.pending_delete_workspace.take()
     }
 
-    pub fn begin_rename_workspace(&mut self) {
-        let Some(id) = self.active_workspace_id() else {
+    pub fn begin_rename_workspace_home(&mut self) {
+        let Some(id) = self.selected_workspace_id() else {
             return;
         };
         self.rename_workspace_input = self
@@ -319,6 +318,15 @@ impl TuiApp {
 
     pub fn take_rename_request(&mut self) -> Option<(WorkspaceId, String)> {
         let id = self.active_workspace_id()?;
+        let name = self.rename_workspace_input.take()?.trim().to_string();
+        if name.is_empty() {
+            return None;
+        }
+        Some((id, name))
+    }
+
+    pub fn take_rename_request_home(&mut self) -> Option<(WorkspaceId, String)> {
+        let id = self.selected_workspace_id()?;
         let name = self.rename_workspace_input.take()?.trim().to_string();
         if name.is_empty() {
             return None;

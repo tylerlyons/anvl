@@ -132,6 +132,28 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
         );
     }
 
+    if app.is_renaming_workspace() {
+        if let Some(name) = &app.rename_workspace_input {
+            let modal = centered_rect(area, 56, 5);
+            frame.render_widget(Clear, modal);
+            frame.render_widget(
+                Paragraph::new(format!("{name}_"))
+                    .block(
+                        Block::default()
+                            .title("Rename Workspace (Enter to confirm, Esc to cancel)")
+                            .borders(Borders::ALL)
+                            .border_style(
+                                Style::default()
+                                    .fg(Color::LightBlue)
+                                    .add_modifier(Modifier::BOLD),
+                            )
+                            .border_type(BorderType::Thick),
+                    ),
+                modal,
+            );
+        }
+    }
+
     if app.is_settings_open() {
         let modal = centered_rect(area, 50, 8);
         frame.render_widget(Clear, modal);

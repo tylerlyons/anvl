@@ -206,14 +206,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
                 _ => String::new(),
             };
             format!(
-                "Workspace: {} ({})  {} {}{}",
+                "Workspace: {} ({})  {}  ◈{}{}",
                 w.name, w.path, branch, w.dirty_files, ab
             )
         })
         .unwrap_or_else(|| "Workspace".to_string());
 
     let (header_style, header_border_type) =
-        standard_border_style(app.focus == crate::app::Focus::WsHeader);
+        standard_border_style(false);
     frame.render_widget(
         Paragraph::new(if let Some(name) = &app.rename_workspace_input {
             format!("{title}\nRename: {name}")

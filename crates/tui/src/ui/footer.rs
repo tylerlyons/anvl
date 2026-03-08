@@ -57,11 +57,19 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
                     gap(),
                     key("N"), desc(" cancel"),
                 ]
+            } else if app.is_renaming_workspace() {
+                vec![
+                    key("Enter"), desc(" confirm"),
+                    gap(),
+                    key("Esc"), desc(" cancel"),
+                ]
             } else {
                 vec![
                     key("Enter"), desc(" open"),
                     gap(),
                     key("n"), desc(" new"),
+                    gap(),
+                    key("e"), desc(" rename"),
                     gap(),
                     key("D"), desc(" delete"),
                     gap(),
@@ -139,13 +147,6 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
             ],
             Focus::WsDiff => vec![
                 key("j/k"), desc(" scroll"),
-                gap(),
-                key("Tab"), desc(" next pane"),
-                gap(),
-                key("Esc"), desc(" home"),
-            ],
-            Focus::WsHeader => vec![
-                key("e"), desc(" rename workspace"),
                 gap(),
                 key("Tab"), desc(" next pane"),
                 gap(),

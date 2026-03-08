@@ -428,6 +428,31 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     }
                                     _ => {}
                                 }
+                            } else if app.is_renaming_workspace() {
+                                match key.code {
+                                    KeyCode::Esc => app.cancel_rename_workspace(),
+                                    KeyCode::Enter => {
+                                        if let Some((id, name)) =
+                                            app.take_rename_request_home()
+                                        {
+                                            let _ = backend
+                                                .cmd_tx
+                                                .send(Command::RenameWorkspace { id, name })
+                                                .await;
+                                        }
+                                    }
+                                    KeyCode::Backspace => {
+                                        if let Some(input) = app.rename_input_mut() {
+                                            input.pop();
+                                        }
+                                    }
+                                    KeyCode::Char(c) => {
+                                        if let Some(input) = app.rename_input_mut() {
+                                            input.push(c);
+                                        }
+                                    }
+                                    _ => {}
+                                }
                             } else {
                                 match key.code {
                                     KeyCode::Esc => {
@@ -470,6 +495,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         app.begin_add_workspace(cwd);
                                     }
                                     KeyCode::Char('D') => app.begin_delete_workspace(),
+                                    KeyCode::Char('e') => app.begin_rename_workspace_home(),
                                     KeyCode::Char('S') => app.open_settings(),
                                     KeyCode::Char('!') => {
                                         if let Some(id) = app.selected_workspace_id() {
@@ -826,9 +852,6 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     let _ = backend.cmd_tx.send(Command::GitPush { id }).await;
                                     app.begin_git_op(id);
                                 }
-                                KeyCode::Char('e') if matches!(app.focus, app::Focus::WsHeader) => {
-                                    app.begin_rename_workspace();
-                                }
                                 KeyCode::Char('1') => app.set_active_tab_index(0),
                                 KeyCode::Char('2') => app.set_active_tab_index(1),
                                 KeyCode::Right | KeyCode::Char('l')
@@ -1020,21 +1043,19 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
 
 fn cycle_workspace_focus(focus: app::Focus) -> app::Focus {
     match focus {
-        app::Focus::WsHeader => app::Focus::WsTerminalTabs,
         app::Focus::WsTerminalTabs => app::Focus::WsTerminal,
         app::Focus::WsTerminal => app::Focus::WsFiles,
         app::Focus::WsFiles => app::Focus::WsLog,
         app::Focus::WsLog => app::Focus::WsBranches,
         app::Focus::WsBranches => app::Focus::WsDiff,
-        app::Focus::WsDiff => app::Focus::WsHeader,
+        app::Focus::WsDiff => app::Focus::WsTerminalTabs,
         _ => app::Focus::WsTerminalTabs,
     }
 }
 
 fn cycle_workspace_focus_reverse(focus: app::Focus) -> app::Focus {
     match focus {
-        app::Focus::WsHeader => app::Focus::WsDiff,
-        app::Focus::WsTerminalTabs => app::Focus::WsHeader,
+        app::Focus::WsTerminalTabs => app::Focus::WsDiff,
         app::Focus::WsTerminal => app::Focus::WsTerminalTabs,
         app::Focus::WsFiles => app::Focus::WsTerminal,
         app::Focus::WsLog => app::Focus::WsFiles,
@@ -1206,9 +1227,7 @@ async fn handle_mouse(
                     ui::screens::workspace::hit_test(area, app, mouse.column, mouse.row)
                 {
                     match hit {
-                        ui::screens::workspace::WorkspaceHit::Header => {
-                            app.focus = app::Focus::WsHeader;
-                        }
+                        ui::screens::workspace::WorkspaceHit::Header => {}
                         ui::screens::workspace::WorkspaceHit::TerminalTab(idx) => {
                             app.focus = app::Focus::WsTerminalTabs;
                             app.set_active_tab_index(idx);
