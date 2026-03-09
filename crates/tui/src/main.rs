@@ -2,13 +2,10 @@ mod app;
 mod keymap;
 mod ui;
 
-use std::io::Write as _;
-use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command as OsCommand, Stdio};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use app::TuiApp;
 use base64::Engine as _;
 use crossterm::{
@@ -19,225 +16,29 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use futures::{SinkExt, StreamExt};
 use anvl_core::{spawn_core, CoreHandle};
 use protocol::{AttentionLevel, Command, Event as CoreEvent, Route, TerminalKind};
 use ratatui::{backend::CrosstermBackend, Terminal};
-use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
-
-#[derive(Debug)]
-enum LaunchMode {
-    Local,
-    CreateSession { name: String },
-    AttachSession { name: String },
-    RemoveSession { name: String },
-    ListSessions,
-    RunDaemon { name: Option<String>, port: u16 },
-}
-
-#[derive(Debug)]
-struct Cli {
-    mode: LaunchMode,
-    detach: bool,
-    version: bool,
-}
 
 struct Backend {
     cmd_tx: mpsc::Sender<Command>,
     evt_rx: mpsc::Receiver<CoreEvent>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SessionEntry {
-    name: String,
-    port: u16,
-    pid: u32,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct SessionRegistry {
-    sessions: Vec<SessionEntry>,
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = parse_cli(std::env::args().skip(1).collect::<Vec<_>>())?;
-    if cli.version {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "-V" || a == "--version") {
         println!("anvl {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
-    match cli.mode {
-        LaunchMode::RunDaemon { name, port } => run_daemon(name, port).await,
-        LaunchMode::RemoveSession { name } => delete_session(&name),
-        LaunchMode::ListSessions => list_sessions(),
-        LaunchMode::CreateSession { name } => {
-            let entry = ensure_session_running(&name).await?;
-            if cli.detach {
-                println!(
-                    "session '{}' running in background on port {} (detached)",
-                    entry.name, entry.port
-                );
-                return Ok(());
-            }
-            let backend = build_remote_backend(entry.port).await?;
-            run_tui(backend).await
-        }
-        LaunchMode::AttachSession { name } => {
-            let entry = get_session(&name)?.ok_or_else(|| {
-                anyhow!(
-                    "session '{}' not found. create it with: anvl -s {}",
-                    name,
-                    name
-                )
-            })?;
-            if !port_open(entry.port) {
-                return Err(anyhow!(
-                    "session '{}' exists but is not reachable on port {}",
-                    name,
-                    entry.port
-                ));
-            }
-            if cli.detach {
-                println!(
-                    "session '{}' is running on port {} (detached)",
-                    entry.name, entry.port
-                );
-                return Ok(());
-            }
-            let backend = build_remote_backend(entry.port).await?;
-            run_tui(backend).await
-        }
-        LaunchMode::Local => {
-            if cli.detach {
-                return Err(anyhow!(
-                    "--detach requires a named session: use `anvl -s <name> -d` or `anvl -a <name> -d`"
-                ));
-            }
-            let (backend, core) = build_local_backend();
-            let web_port = std::env::var("ANVL_WEB_PORT")
-                .ok()
-                .and_then(|v| v.parse::<u16>().ok())
-                .unwrap_or(3001);
-            if std::env::var("ANVL_DISABLE_EMBEDDED_WEB").is_err() {
-                let core_for_web = core.clone();
-                tokio::spawn(async move {
-                    let _ = server::run_server_with_core(core_for_web, web_port).await;
-                });
-            }
-            run_tui(backend).await
-        }
+    if let Some(arg) = args.first() {
+        return Err(anyhow!("unknown argument: {arg}"));
     }
-}
-
-fn parse_cli(args: Vec<String>) -> Result<Cli> {
-    let mut i = 0usize;
-    let mut mode = LaunchMode::Local;
-    let mut detach = false;
-    let mut version = false;
-    let mut daemon_port: Option<u16> = None;
-    let mut daemon_name: Option<String> = None;
-
-    while i < args.len() {
-        match args[i].as_str() {
-            "-s" | "--session" => {
-                let Some(name) = args.get(i + 1).cloned() else {
-                    return Err(anyhow!("missing session name for {}", args[i]));
-                };
-                mode = LaunchMode::CreateSession { name };
-                i += 2;
-            }
-            "-a" => {
-                let Some(name) = args.get(i + 1).cloned() else {
-                    return Err(anyhow!("missing session name for -a"));
-                };
-                mode = LaunchMode::AttachSession { name };
-                i += 2;
-            }
-            "-r" | "--remove" => {
-                let Some(name) = args.get(i + 1).cloned() else {
-                    return Err(anyhow!("missing session name for {}", args[i]));
-                };
-                mode = LaunchMode::RemoveSession { name };
-                i += 2;
-            }
-            "-V" | "--version" => {
-                version = true;
-                i += 1;
-            }
-            "-d" | "--detach" => {
-                detach = true;
-                i += 1;
-            }
-            "-l" | "--list" => {
-                mode = LaunchMode::ListSessions;
-                i += 1;
-            }
-            "--run-daemon" => {
-                mode = LaunchMode::RunDaemon {
-                    name: None,
-                    port: 3001,
-                };
-                i += 1;
-            }
-            "--session-name" => {
-                let Some(name) = args.get(i + 1).cloned() else {
-                    return Err(anyhow!("missing name for --session-name"));
-                };
-                daemon_name = Some(name);
-                i += 2;
-            }
-            "--port" => {
-                let Some(v) = args.get(i + 1) else {
-                    return Err(anyhow!("missing port for --port"));
-                };
-                daemon_port = Some(
-                    v.parse::<u16>()
-                        .with_context(|| format!("invalid port '{}': expected number", v))?,
-                );
-                i += 2;
-            }
-            other => {
-                return Err(anyhow!("unknown argument: {other}"));
-            }
-        }
-    }
-
-    if matches!(mode, LaunchMode::RunDaemon { .. }) {
-        return Ok(Cli {
-            mode: LaunchMode::RunDaemon {
-                name: daemon_name,
-                port: daemon_port.unwrap_or(3001),
-            },
-            detach,
-            version,
-        });
-    }
-
-    if detach
-        && matches!(
-            mode,
-            LaunchMode::RemoveSession { .. } | LaunchMode::ListSessions
-        )
-    {
-        return Err(anyhow!(
-            "--detach is only valid with session create/attach (-s or -a)"
-        ));
-    }
-
-    Ok(Cli { mode, detach, version })
-}
-
-async fn run_daemon(name: Option<String>, port: u16) -> Result<()> {
-    if let Some(session_name) = name {
-        std::env::set_var("ANVL_SESSION_NAME", session_name);
-    } else {
-        std::env::remove_var("ANVL_SESSION_NAME");
-    }
-    let core = spawn_core();
-    server::run_server_with_core(core, port).await
+    let (backend, _core) = build_local_backend();
+    run_tui(backend).await
 }
 
 fn build_local_backend() -> (Backend, CoreHandle) {
@@ -261,51 +62,6 @@ fn build_local_backend() -> (Backend, CoreHandle) {
     });
 
     (Backend { cmd_tx, evt_rx }, core)
-}
-
-async fn build_remote_backend(port: u16) -> Result<Backend> {
-    let ws_url = format!("ws://127.0.0.1:{port}/ws");
-    let (ws_stream, _) = connect_async(&ws_url)
-        .await
-        .with_context(|| format!("failed to connect websocket at {ws_url}"))?;
-    let (mut ws_write, mut ws_read) = ws_stream.split();
-
-    let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(1024);
-    let (evt_tx, evt_rx) = mpsc::channel::<CoreEvent>(1024);
-
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                maybe_cmd = cmd_rx.recv() => {
-                    let Some(cmd) = maybe_cmd else { break; };
-                    let Ok(payload) = serde_json::to_string(&cmd) else { continue; };
-                    if ws_write.send(Message::Text(payload.into())).await.is_err() {
-                        break;
-                    }
-                }
-                maybe_msg = ws_read.next() => {
-                    let Some(msg_res) = maybe_msg else { break; };
-                    let Ok(msg) = msg_res else { break; };
-                    match msg {
-                        Message::Text(txt) => {
-                            if let Ok(evt) = serde_json::from_str::<CoreEvent>(&txt) {
-                                if evt_tx.send(evt).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Message::Binary(_) => {}
-                        Message::Ping(_) => {}
-                        Message::Pong(_) => {}
-                        Message::Close(_) => break,
-                        Message::Frame(_) => {}
-                    }
-                }
-            }
-        }
-    });
-
-    Ok(Backend { cmd_tx, evt_rx })
 }
 
 async fn run_tui(mut backend: Backend) -> Result<()> {
@@ -1090,25 +846,6 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
     Ok(())
 }
 
-fn list_sessions() -> Result<()> {
-    let registry = load_registry()?;
-    if registry.sessions.is_empty() {
-        println!("no sessions");
-        return Ok(());
-    }
-
-    println!("sessions:");
-    for s in registry.sessions {
-        let state = if port_open(s.port) {
-            "running"
-        } else {
-            "stale"
-        };
-        println!("- {}  (port {} pid {} {})", s.name, s.port, s.pid, state);
-    }
-    Ok(())
-}
-
 fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
     match evt {
         CoreEvent::WorkspaceList { items } => app.set_workspaces(items),
@@ -1525,199 +1262,3 @@ async fn start_workspace_tab_terminals(
     }
 }
 
-async fn ensure_session_running(name: &str) -> Result<SessionEntry> {
-    let mut registry = load_registry()?;
-    if let Some(existing) = registry.sessions.iter().find(|s| s.name == name).cloned() {
-        if port_open(existing.port) {
-            return Ok(existing);
-        }
-        registry.sessions.retain(|s| s.name != name);
-    }
-
-    let port = find_free_port(4101, 4299)
-        .ok_or_else(|| anyhow!("no free ports available for session daemon"))?;
-    let pid = spawn_daemon_process(name, port)?;
-
-    wait_for_port(port, Duration::from_secs(8)).await?;
-
-    let entry = SessionEntry {
-        name: name.to_string(),
-        port,
-        pid,
-    };
-    registry.sessions.retain(|s| s.name != name);
-    registry.sessions.push(entry.clone());
-    save_registry(&registry)?;
-    Ok(entry)
-}
-
-fn get_session(name: &str) -> Result<Option<SessionEntry>> {
-    let registry = load_registry()?;
-    Ok(registry.sessions.into_iter().find(|s| s.name == name))
-}
-
-fn delete_session(name: &str) -> Result<()> {
-    let mut registry = load_registry()?;
-    let Some(entry) = registry.sessions.iter().find(|s| s.name == name).cloned() else {
-        println!("session '{}' not found", name);
-        return Ok(());
-    };
-
-    print!(
-        "Delete session '{}' on port {}? This will stop running terminals. [y/N]: ",
-        entry.name, entry.port
-    );
-    std::io::stdout().flush()?;
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    let confirm = matches!(input.trim().to_lowercase().as_str(), "y" | "yes");
-    if !confirm {
-        println!("aborted");
-        return Ok(());
-    }
-
-    if is_expected_daemon_process(&entry) {
-        let _ = OsCommand::new("kill").arg(entry.pid.to_string()).status();
-    } else {
-        println!(
-            "warning: pid {} does not look like session daemon '{}'; skipping kill and removing registry entry only",
-            entry.pid, entry.name
-        );
-    }
-
-    registry.sessions.retain(|s| s.name != name);
-    save_registry(&registry)?;
-    if let Some(path) = session_workspaces_persist_path(name) {
-        let _ = std::fs::remove_file(path);
-    }
-    println!("deleted session '{}'", name);
-    Ok(())
-}
-
-fn spawn_daemon_process(name: &str, port: u16) -> Result<u32> {
-    let exe = std::env::current_exe()?;
-    let child = OsCommand::new(exe)
-        .arg("--run-daemon")
-        .arg("--session-name")
-        .arg(name)
-        .arg("--port")
-        .arg(port.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .with_context(|| {
-            format!(
-                "failed to spawn daemon for session '{}', port {}",
-                name, port
-            )
-        })?;
-    Ok(child.id())
-}
-
-async fn wait_for_port(port: u16, timeout: Duration) -> Result<()> {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if port_open(port) {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(120)).await;
-    }
-    Err(anyhow!("daemon did not become ready on port {}", port))
-}
-
-fn port_open(port: u16) -> bool {
-    let addr: SocketAddr = match format!("127.0.0.1:{port}").parse() {
-        Ok(a) => a,
-        Err(_) => return false,
-    };
-    TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok()
-}
-
-fn is_expected_daemon_process(entry: &SessionEntry) -> bool {
-    let output = match OsCommand::new("ps")
-        .arg("-p")
-        .arg(entry.pid.to_string())
-        .arg("-o")
-        .arg("command=")
-        .output()
-    {
-        Ok(out) => out,
-        Err(_) => return false,
-    };
-    if !output.status.success() {
-        return false;
-    }
-    let cmdline = String::from_utf8_lossy(&output.stdout);
-    cmdline.contains("--run-daemon")
-        && cmdline.contains(&format!("--port {}", entry.port))
-        && cmdline.contains(&format!("--session-name {}", entry.name))
-}
-
-fn find_free_port(start: u16, end: u16) -> Option<u16> {
-    (start..=end).find(|p| !port_open(*p))
-}
-
-fn session_registry_path() -> Option<PathBuf> {
-    let base = if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        PathBuf::from(xdg)
-    } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".config")
-    } else {
-        return None;
-    };
-    Some(base.join("anvl").join("sessions.json"))
-}
-
-fn session_workspaces_persist_path(name: &str) -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let safe = sanitize_session_name(name);
-    Some(
-        PathBuf::from(home)
-            .join(".config")
-            .join("anvl")
-            .join(format!("workspaces.{safe}.json")),
-    )
-}
-
-fn sanitize_session_name(input: &str) -> String {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return "default".to_string();
-    }
-    let mut out = String::with_capacity(trimmed.len());
-    for c in trimmed.chars() {
-        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-            out.push(c);
-        } else {
-            out.push('_');
-        }
-    }
-    out
-}
-
-fn load_registry() -> Result<SessionRegistry> {
-    let Some(path) = session_registry_path() else {
-        return Ok(SessionRegistry::default());
-    };
-    if !path.exists() {
-        return Ok(SessionRegistry::default());
-    }
-    let raw = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read session registry: {}", path.display()))?;
-    let registry = serde_json::from_str::<SessionRegistry>(&raw).unwrap_or_default();
-    Ok(registry)
-}
-
-fn save_registry(registry: &SessionRegistry) -> Result<()> {
-    let Some(path) = session_registry_path() else {
-        return Ok(());
-    };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let raw = serde_json::to_string_pretty(registry)?;
-    std::fs::write(&path, raw)
-        .with_context(|| format!("failed to write session registry: {}", path.display()))?;
-    Ok(())
-}
