@@ -341,10 +341,33 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             }
         }
 
-        terminal.draw(|frame| match app.route {
-            Route::Home => ui::screens::home::render(frame, frame.area(), &app),
-            Route::Workspace { .. } => ui::screens::workspace::render(frame, frame.area(), &app),
+        let mut pending_clipboard_text: Option<String> = None;
+        terminal.draw(|frame| {
+            match app.route {
+                Route::Home => ui::screens::home::render(frame, frame.area(), &app),
+                Route::Workspace { .. } => {
+                    ui::screens::workspace::render(frame, frame.area(), &app)
+                }
+            }
+            // Extract selected text from the rendered buffer before applying highlights.
+            if let Some(sel) = &app.pending_copy_selection {
+                pending_clipboard_text =
+                    Some(extract_selected_text_from_buf(frame.buffer_mut(), sel));
+            }
+            if let Some(sel) = &app.mouse_selection {
+                if !sel.is_empty() {
+                    apply_selection_highlight(frame, sel);
+                }
+            }
         })?;
+        if let Some(text) = pending_clipboard_text {
+            app.pending_copy_selection = None;
+            if !text.is_empty() {
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    let _ = clipboard.set_text(text);
+                }
+            }
+        }
 
         if event::poll(Duration::from_millis(16))? {
             match event::read()? {
@@ -1236,9 +1259,30 @@ async fn handle_mouse(
         Err(_) => return,
     };
 
+    // Handle drag selection (works across all routes/panes)
+    match mouse.kind {
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if let Some(sel) = &mut app.mouse_selection {
+                sel.end_col = mouse.column;
+                sel.end_row = mouse.row;
+            }
+            return;
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            if let Some(sel) = app.mouse_selection.take() {
+                if !sel.is_empty() {
+                    app.pending_copy_selection = Some(sel);
+                }
+            }
+            return;
+        }
+        _ => {}
+    }
+
     match app.route {
         Route::Home => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                app.mouse_selection = Some(app::MouseSelection::at(mouse.column, mouse.row));
                 if app.is_confirming_delete() {
                     let rect = ui::screens::home::delete_modal_rect(area);
                     if point_in_rect(rect, mouse.column, mouse.row) {
@@ -1283,6 +1327,7 @@ async fn handle_mouse(
         },
         Route::Workspace { id } => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                app.mouse_selection = Some(app::MouseSelection::at(mouse.column, mouse.row));
                 if let Some(hit) =
                     ui::screens::workspace::hit_test(area, app, mouse.column, mouse.row)
                 {
@@ -1362,6 +1407,60 @@ async fn handle_mouse(
 
 fn point_in_rect(r: ratatui::layout::Rect, x: u16, y: u16) -> bool {
     x >= r.x && y >= r.y && x < r.right() && y < r.bottom()
+}
+
+/// xterm-256 colour 39 — a medium sky-blue used for mouse selection highlighting.
+const SELECTION_BG: ratatui::style::Color = ratatui::style::Color::Indexed(39);
+
+fn apply_selection_highlight(frame: &mut ratatui::Frame, sel: &app::MouseSelection) {
+    let ((start_col, start_row), (end_col, end_row)) = sel.ordered();
+    let buf = frame.buffer_mut();
+    let width = buf.area.width;
+    for row in start_row..=end_row {
+        let row_start = if row == start_row { start_col } else { 0 };
+        let row_end = if row == end_row {
+            end_col
+        } else {
+            width.saturating_sub(1)
+        };
+        for col in row_start..=row_end {
+            if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(col, row)) {
+                cell.set_style(
+                    ratatui::style::Style::default()
+                        .bg(SELECTION_BG)
+                        .fg(ratatui::style::Color::Black),
+                );
+            }
+        }
+    }
+}
+
+fn extract_selected_text_from_buf(
+    buf: &ratatui::buffer::Buffer,
+    sel: &app::MouseSelection,
+) -> String {
+    let ((start_col, start_row), (end_col, end_row)) = sel.ordered();
+    let width = buf.area.width;
+    let mut result = String::new();
+    for row in start_row..=end_row {
+        let row_start = if row == start_row { start_col } else { 0 };
+        let row_end = if row == end_row {
+            end_col
+        } else {
+            width.saturating_sub(1)
+        };
+        let mut line = String::new();
+        for col in row_start..=row_end {
+            if let Some(cell) = buf.cell(ratatui::layout::Position::new(col, row)) {
+                line.push_str(cell.symbol());
+            }
+        }
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str(line.trim_end());
+    }
+    result
 }
 
 async fn start_workspace_tab_terminals(

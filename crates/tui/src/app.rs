@@ -127,6 +127,49 @@ impl DirBrowserState {
     }
 }
 
+/// Tracks an in-progress or completed mouse drag selection on the terminal screen.
+///
+/// Coordinates are in terminal cell units (column, row) relative to the top-left of
+/// the full terminal window. `anchor` is where the button was pressed; `end` follows
+/// the cursor as it moves.
+#[derive(Debug, Clone, Copy)]
+pub struct MouseSelection {
+    /// Column where the drag began.
+    pub anchor_col: u16,
+    /// Row where the drag began.
+    pub anchor_row: u16,
+    /// Current column of the drag endpoint.
+    pub end_col: u16,
+    /// Current row of the drag endpoint.
+    pub end_row: u16,
+}
+
+impl MouseSelection {
+    /// Creates a zero-length selection anchored at the given position.
+    pub fn at(col: u16, row: u16) -> Self {
+        Self {
+            anchor_col: col,
+            anchor_row: row,
+            end_col: col,
+            end_row: row,
+        }
+    }
+
+    /// Returns ((start_col, start_row), (end_col, end_row)) ordered by position.
+    pub fn ordered(&self) -> ((u16, u16), (u16, u16)) {
+        if (self.anchor_row, self.anchor_col) <= (self.end_row, self.end_col) {
+            ((self.anchor_col, self.anchor_row), (self.end_col, self.end_row))
+        } else {
+            ((self.end_col, self.end_row), (self.anchor_col, self.anchor_row))
+        }
+    }
+
+    /// Returns `true` when the anchor and end positions are identical (zero-area selection).
+    pub fn is_empty(&self) -> bool {
+        self.anchor_col == self.end_col && self.anchor_row == self.end_row
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     HomeGrid,
@@ -179,6 +222,9 @@ pub struct TuiApp {
     pub git_op_in_progress: HashSet<WorkspaceId>,
     pub settings_open: bool,
     pub settings_selected: usize,
+    pub mouse_selection: Option<MouseSelection>,
+    /// Set on mouse-up to request clipboard copy on the next frame render.
+    pub pending_copy_selection: Option<MouseSelection>,
 }
 
 impl Default for TuiApp {
@@ -219,6 +265,8 @@ impl Default for TuiApp {
             settings: load_settings(),
             settings_open: false,
             settings_selected: 0,
+            mouse_selection: None,
+            pending_copy_selection: None,
         }
     }
 }
