@@ -27,17 +27,31 @@ The `web/` directory contains a lightweight browser frontend (`index.html` + `ap
 
 ## Getting Started
 
-### Prerequisites
+### Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/inhesrom/anvl/master/install.sh | bash
+```
+
+Prebuilt binaries are available for:
+- macOS (Apple Silicon)
+- Linux (x86_64)
+
+The installer places the `anvl` binary in `~/.local/bin`. Override with `ANVL_INSTALL_DIR`.
+
+### Build from source
+
+#### Prerequisites
 
 - [Rust toolchain](https://rustup.rs/) (stable)
 
-### Build
+#### Build
 
 ```sh
 cargo build --release
 ```
 
-### Run
+#### Run
 
 ```sh
 cargo run
