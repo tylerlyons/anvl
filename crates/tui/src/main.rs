@@ -849,8 +849,26 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
         if let Some(text) = pending_clipboard_text {
             app.pending_copy_selection = None;
             if !text.is_empty() {
-                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                    let _ = clipboard.set_text(text);
+                let copied = if cfg!(target_os = "linux") {
+                    // On Wayland, arboard's clipboard doesn't persist after drop.
+                    // Use wl-copy which forks a background process to serve paste requests.
+                    std::process::Command::new("wl-copy")
+                        .stdin(std::process::Stdio::piped())
+                        .spawn()
+                        .and_then(|mut child| {
+                            use std::io::Write;
+                            if let Some(stdin) = child.stdin.as_mut() {
+                                stdin.write_all(text.as_bytes())?;
+                            }
+                            child.wait()
+                        })
+                        .is_ok()
+                } else {
+                    arboard::Clipboard::new()
+                        .and_then(|mut clipboard| clipboard.set_text(text))
+                        .is_ok()
+                };
+                if copied {
                     app.git_action_message =
                         Some(("Copied to clipboard".to_string(), Instant::now()));
                 }
