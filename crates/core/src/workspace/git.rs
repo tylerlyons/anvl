@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use protocol::{BranchInfo, ChangedFile, CommitInfo, GitState, RemoteBranchInfo, SshTarget};
+use protocol::{BranchInfo, ChangedFile, CommitInfo, GitState, RemoteBranchInfo, SshTarget, TagInfo};
 
 use super::ssh;
 
@@ -42,6 +42,8 @@ async fn refresh_git_ssh(repo: &Path, target: &SshTarget) -> Result<GitState> {
         // 6: remote branches
         "git for-each-ref --format='%(refname:short)' refs/remotes/ 2>/dev/null || echo ''"
             .to_string(),
+        // 7: tags
+        "git tag --sort=-creatordate --format='%(refname:short)\x1f%(objectname:short)\x1f%(creatordate:relative)' 2>/dev/null | head -20 || echo ''".to_string(),
     ];
 
     let out = ssh::build_batch_command(target, repo, &commands)
@@ -67,6 +69,7 @@ async fn refresh_git_ssh(repo: &Path, target: &SshTarget) -> Result<GitState> {
     let recent_commits = parse_commits_output(section(4));
     let local_branches = parse_local_branches_output(section(5));
     let remote_branches = parse_remote_branches_output(section(6));
+    let tags = parse_tags_output(section(7));
 
     Ok(GitState {
         branch,
@@ -77,6 +80,7 @@ async fn refresh_git_ssh(repo: &Path, target: &SshTarget) -> Result<GitState> {
         recent_commits,
         local_branches,
         remote_branches,
+        tags,
     })
 }
 
@@ -95,9 +99,10 @@ async fn refresh_git_local(repo: &Path) -> Result<GitState> {
     let commits_fut = get_recent_commits(repo, 20);
     let local_branches_fut = get_local_branches(repo);
     let remote_branches_fut = get_remote_branches(repo);
+    let tags_fut = get_tags(repo);
 
-    let (branch_out, status_out, (upstream, ahead, behind), recent_commits, local_branches, remote_branches) =
-        tokio::join!(branch_fut, status_fut, upstream_fut, commits_fut, local_branches_fut, remote_branches_fut);
+    let (branch_out, status_out, (upstream, ahead, behind), recent_commits, local_branches, remote_branches, tags) =
+        tokio::join!(branch_fut, status_fut, upstream_fut, commits_fut, local_branches_fut, remote_branches_fut, tags_fut);
 
     let branch = match branch_out {
         Ok(out) if out.status.success() => {
@@ -127,6 +132,7 @@ async fn refresh_git_local(repo: &Path) -> Result<GitState> {
         recent_commits,
         local_branches,
         remote_branches,
+        tags,
     })
 }
 
@@ -174,6 +180,24 @@ fn parse_commits_output(output: &str) -> Vec<CommitInfo> {
                     message: parts[1].to_string(),
                     author: parts[2].to_string(),
                     date: parts[3].to_string(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn parse_tags_output(output: &str) -> Vec<TagInfo> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(3, '\x1f').collect();
+            if parts.len() == 3 {
+                Some(TagInfo {
+                    name: parts[0].to_string(),
+                    hash: parts[1].to_string(),
+                    date: parts[2].to_string(),
                 })
             } else {
                 None
@@ -336,6 +360,29 @@ async fn get_remote_branches(repo: &Path) -> Vec<RemoteBranchInfo> {
     }
 
     parse_remote_branches_output(&String::from_utf8_lossy(&out.stdout))
+}
+
+async fn get_tags(repo: &Path) -> Vec<TagInfo> {
+    let format_arg = "--format=%(refname:short)\x1f%(objectname:short)\x1f%(creatordate:relative)";
+    let out = ssh::build_command(
+        None,
+        repo,
+        "git",
+        &["tag", "--sort=-creatordate", format_arg],
+    )
+    .output()
+    .await;
+
+    let Ok(out) = out else { return Vec::new() };
+    if !out.status.success() {
+        return Vec::new();
+    }
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    parse_tags_output(&text)
+        .into_iter()
+        .take(20)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -592,9 +639,53 @@ pub async fn git_pull(repo: &Path, ssh: Option<&SshTarget>) -> Result<()> {
     let out = ssh::build_command(ssh, repo, "git", &["pull"])
         .output()
         .await?;
-    if !out.status.success() {
-        anyhow::bail!("git pull failed: {}", String::from_utf8_lossy(&out.stderr));
+    if out.status.success() {
+        return Ok(());
     }
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let needs_stash = stderr.contains("Please commit your changes or stash them")
+        || stderr.contains("Your local changes to the following files would be overwritten");
+
+    if !needs_stash {
+        anyhow::bail!("git pull failed: {}", stderr);
+    }
+
+    // Auto stash-pull-pop
+    let stash_out = ssh::build_command(ssh, repo, "git", &["stash"])
+        .output()
+        .await?;
+    if !stash_out.status.success() {
+        anyhow::bail!(
+            "git stash failed before pull: {}",
+            String::from_utf8_lossy(&stash_out.stderr)
+        );
+    }
+
+    let pull_out = ssh::build_command(ssh, repo, "git", &["pull"])
+        .output()
+        .await?;
+    if !pull_out.status.success() {
+        // Try to restore stash even if pull fails
+        let _ = ssh::build_command(ssh, repo, "git", &["stash", "pop"])
+            .output()
+            .await;
+        anyhow::bail!(
+            "git pull failed after stash: {}",
+            String::from_utf8_lossy(&pull_out.stderr)
+        );
+    }
+
+    let pop_out = ssh::build_command(ssh, repo, "git", &["stash", "pop"])
+        .output()
+        .await?;
+    if !pop_out.status.success() {
+        anyhow::bail!(
+            "Pulled successfully but stash pop had conflicts: {}",
+            String::from_utf8_lossy(&pop_out.stderr)
+        );
+    }
+
     Ok(())
 }
 
@@ -615,6 +706,67 @@ pub async fn commit(repo: &Path, message: &str, ssh: Option<&SshTarget>) -> Resu
     if !out.status.success() {
         anyhow::bail!(
             "git commit failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(())
+}
+
+pub async fn discard_file(
+    repo: &Path,
+    file: &str,
+    index_status: char,
+    worktree_status: char,
+    ssh: Option<&SshTarget>,
+) -> Result<()> {
+    if index_status == '?' && worktree_status == '?' {
+        // Untracked file — remove it
+        let out = ssh::build_command(ssh, repo, "rm", &["-rf", "--", file])
+            .output()
+            .await?;
+        if !out.status.success() {
+            anyhow::bail!("rm failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    } else {
+        // If staged, unstage first
+        if index_status != ' ' && index_status != '?' {
+            let out = ssh::build_command(ssh, repo, "git", &["reset", "HEAD", "--", file])
+                .output()
+                .await?;
+            if !out.status.success() {
+                anyhow::bail!(
+                    "git reset failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+        // Restore working tree
+        let out = ssh::build_command(ssh, repo, "git", &["checkout", "--", file])
+            .output()
+            .await?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "git checkout failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+    Ok(())
+}
+
+pub async fn git_stash(repo: &Path, message: Option<&str>, ssh: Option<&SshTarget>) -> Result<()> {
+    let out = if let Some(msg) = message.filter(|m| !m.trim().is_empty()) {
+        ssh::build_command(ssh, repo, "git", &["stash", "push", "-m", msg])
+            .output()
+            .await?
+    } else {
+        ssh::build_command(ssh, repo, "git", &["stash", "push"])
+            .output()
+            .await?
+    };
+    if !out.status.success() {
+        anyhow::bail!(
+            "git stash failed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
     }

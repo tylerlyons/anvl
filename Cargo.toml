@@ -11,4 +11,4 @@ members = [
 overflow-checks = false
 
 [workspace.package]
-version = "0.3.7"
+version = "0.3.8"

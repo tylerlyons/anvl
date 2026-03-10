@@ -304,11 +304,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         .and_then(|id| app.workspace_git.get(&id))
         .map(|g| g.recent_commits.clone())
         .unwrap_or_default();
+    let tags = ws_id
+        .and_then(|id| app.workspace_git.get(&id))
+        .map(|g| g.tags.clone())
+        .unwrap_or_default();
+    let total_log_items = commits.len() + if tags.is_empty() { 0 } else { 1 + tags.len() };
     let mut commit_list_state = ListState::default();
-    if !commits.is_empty() {
-        commit_list_state.select(Some(app.ws_selected_commit.min(commits.len() - 1)));
+    if total_log_items > 0 {
+        commit_list_state.select(Some(app.ws_selected_commit.min(total_log_items - 1)));
     }
-    let commit_items = commits
+    let mut commit_items: Vec<ListItem> = commits
         .iter()
         .map(|c| {
             ListItem::new(Line::from(vec![
@@ -323,7 +328,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
                 ),
             ]))
         })
-        .collect::<Vec<_>>();
+        .collect();
+    if !tags.is_empty() {
+        commit_items.push(ListItem::new(Line::from(Span::styled(
+            "─── Tags ───",
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+        ))));
+        for t in &tags {
+            commit_items.push(ListItem::new(Line::from(vec![
+                Span::styled(format!("{} ", t.hash), Style::default().fg(Color::Yellow)),
+                Span::raw(&t.name),
+                Span::styled(format!(" ({})", t.date), Style::default().fg(Color::DarkGray)),
+            ])));
+        }
+    }
     let (log_style, log_border_type) = standard_border_style(app.focus == crate::app::Focus::WsLog);
     let commit_list = List::new(commit_items)
         .block(
@@ -722,6 +740,64 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
                 .block(
                     Block::default()
                         .title("Commit Message (Enter to commit, Esc to cancel)")
+                        .borders(Borders::ALL)
+                        .border_style(
+                            Style::default()
+                                .fg(Color::LightBlue)
+                                .add_modifier(Modifier::BOLD),
+                        )
+                        .border_type(BorderType::Thick),
+                )
+                .wrap(Wrap { trim: false }),
+            modal_rect,
+        );
+    }
+
+    // --- Discard confirmation modal ---
+    if let Some(file) = &app.confirm_discard_file {
+        let modal_w = 60u16.min(area.width.saturating_sub(4));
+        let modal_h = 5u16;
+        let modal_rect = Rect::new(
+            area.x + (area.width.saturating_sub(modal_w)) / 2,
+            area.y + (area.height.saturating_sub(modal_h)) / 2,
+            modal_w,
+            modal_h,
+        );
+        frame.render_widget(Clear, modal_rect);
+        frame.render_widget(
+            Paragraph::new(format!("Discard changes to {file}?"))
+                .block(
+                    Block::default()
+                        .title("Confirm (y/Enter = yes, n/Esc = cancel)")
+                        .borders(Borders::ALL)
+                        .border_style(
+                            Style::default()
+                                .fg(Color::Red)
+                                .add_modifier(Modifier::BOLD),
+                        )
+                        .border_type(BorderType::Thick),
+                )
+                .wrap(Wrap { trim: false }),
+            modal_rect,
+        );
+    }
+
+    // --- Stash message modal ---
+    if let Some(input) = &app.stash_input {
+        let modal_w = 60u16.min(area.width.saturating_sub(4));
+        let modal_h = 5u16;
+        let modal_rect = Rect::new(
+            area.x + (area.width.saturating_sub(modal_w)) / 2,
+            area.y + (area.height.saturating_sub(modal_h)) / 2,
+            modal_w,
+            modal_h,
+        );
+        frame.render_widget(Clear, modal_rect);
+        frame.render_widget(
+            Paragraph::new(format!("{input}_"))
+                .block(
+                    Block::default()
+                        .title("Stash Message (Enter to stash, Esc to cancel)")
                         .borders(Borders::ALL)
                         .border_style(
                             Style::default()

@@ -285,6 +285,8 @@ pub struct TuiApp {
     pub ssh_workspace_input: Option<SshWorkspaceInput>,
     pub ssh_history: Vec<SshHistoryEntry>,
     pub ssh_history_picker: Option<SshHistoryPicker>,
+    pub confirm_discard_file: Option<String>,
+    pub stash_input: Option<String>,
 }
 
 impl Default for TuiApp {
@@ -331,6 +333,8 @@ impl Default for TuiApp {
             ssh_workspace_input: None,
             ssh_history: load_ssh_history(),
             ssh_history_picker: None,
+            confirm_discard_file: None,
+            stash_input: None,
         }
     }
 }
@@ -838,11 +842,14 @@ impl TuiApp {
             self.ws_selected_commit = 0;
             return;
         };
-        if git.recent_commits.is_empty() {
+        // Total items = commits + (divider + tags) if tags exist
+        let total = git.recent_commits.len()
+            + if git.tags.is_empty() { 0 } else { 1 + git.tags.len() };
+        if total == 0 {
             self.ws_selected_commit = 0;
             return;
         }
-        let len = git.recent_commits.len() as isize;
+        let len = total as isize;
         let next = (self.ws_selected_commit as isize + delta).clamp(0, len - 1);
         self.ws_selected_commit = next as usize;
     }
@@ -861,6 +868,28 @@ impl TuiApp {
 
     pub fn is_creating_branch(&self) -> bool {
         self.create_branch_input.is_some()
+    }
+
+    pub fn is_confirming_discard(&self) -> bool {
+        self.confirm_discard_file.is_some()
+    }
+
+    pub fn begin_discard(&mut self) {
+        if let Some(file) = self.selected_changed_file() {
+            self.confirm_discard_file = Some(file);
+        }
+    }
+
+    pub fn cancel_discard(&mut self) {
+        self.confirm_discard_file = None;
+    }
+
+    pub fn take_discard_file(&mut self) -> Option<String> {
+        self.confirm_discard_file.take()
+    }
+
+    pub fn is_stashing(&self) -> bool {
+        self.stash_input.is_some()
     }
 
     pub fn is_settings_open(&self) -> bool {

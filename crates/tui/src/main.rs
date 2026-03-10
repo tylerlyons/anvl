@@ -994,6 +994,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                         && !app.is_renaming_tab()
                         && !app.is_committing()
                         && !app.is_creating_branch()
+                        && !app.is_confirming_discard()
+                        && !app.is_stashing()
                         && !app.is_settings_open()
                         && !matches!(app.focus, app::Focus::WsTerminal)
                     {
@@ -1412,6 +1414,51 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 continue;
                             }
 
+                            if app.is_confirming_discard() {
+                                match key.code {
+                                    KeyCode::Char('y') | KeyCode::Enter => {
+                                        if let Some(file) = app.take_discard_file() {
+                                            let _ = backend
+                                                .cmd_tx
+                                                .send(Command::GitDiscardFile { id, file })
+                                                .await;
+                                        }
+                                    }
+                                    KeyCode::Char('n') | KeyCode::Esc => {
+                                        app.cancel_discard();
+                                    }
+                                    _ => {}
+                                }
+                                continue;
+                            }
+
+                            if app.is_stashing() {
+                                match key.code {
+                                    KeyCode::Esc => { app.stash_input = None; }
+                                    KeyCode::Enter => {
+                                        if let Some(msg) = app.stash_input.take() {
+                                            let message = if msg.trim().is_empty() { None } else { Some(msg) };
+                                            let _ = backend
+                                                .cmd_tx
+                                                .send(Command::GitStash { id, message })
+                                                .await;
+                                        }
+                                    }
+                                    KeyCode::Backspace => {
+                                        if let Some(input) = app.stash_input.as_mut() {
+                                            input.pop();
+                                        }
+                                    }
+                                    KeyCode::Char(c) => {
+                                        if let Some(input) = app.stash_input.as_mut() {
+                                            input.push(c);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                continue;
+                            }
+
                             // Ctrl+G toggles terminal passthrough mode.
                             if key.code == KeyCode::Char('g')
                                 && key.modifiers.contains(KeyModifiers::CONTROL)
@@ -1579,6 +1626,16 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     if matches!(app.focus, app::Focus::WsFiles) =>
                                 {
                                     app.commit_input = Some(String::new());
+                                }
+                                KeyCode::Char('d')
+                                    if matches!(app.focus, app::Focus::WsFiles) =>
+                                {
+                                    app.begin_discard();
+                                }
+                                KeyCode::Char('s')
+                                    if matches!(app.focus, app::Focus::WsFiles) =>
+                                {
+                                    app.stash_input = Some(String::new());
                                 }
                                 KeyCode::Char('c')
                                     if matches!(app.focus, app::Focus::WsBranches) =>

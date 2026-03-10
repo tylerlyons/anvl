@@ -25,7 +25,8 @@ struct GitRefreshResult {
 use workspace::attention::AttentionDetector;
 use workspace::git::{
     checkout_branch, checkout_remote_branch, commit, create_branch, diff_commit, diff_file,
-    git_fetch, git_pull, git_push, refresh_git, stage_all, stage_file, unstage_all, unstage_file,
+    discard_file, git_fetch, git_pull, git_push, git_stash, refresh_git, stage_all, stage_file,
+    unstage_all, unstage_file,
 };
 use workspace::ssh;
 use workspace::terminal::{start_terminal, TerminalOutput};
@@ -364,6 +365,44 @@ pub fn spawn_core() -> CoreHandle {
                         };
                         let _ = evt_tx_task.send(Event::GitActionResult {
                             id, action: "fetch".to_string(), success, message: msg,
+                        });
+                        if let Ok(git) = refresh_git(&path, ssh.as_ref()).await {
+                            if let Some(ws) = state.workspaces.get_mut(&id) { ws.git = git.clone(); }
+                            let _ = evt_tx_task.send(Event::WorkspaceGitUpdated { id, git });
+                        }
+                    }
+                }
+                Command::GitDiscardFile { id, file } => {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        let path = ws.path.clone();
+                        let ssh = ws.ssh.clone();
+                        let (idx_status, wt_status) = ws.git.changed.iter()
+                            .find(|c| c.path == file)
+                            .map(|c| (c.index_status, c.worktree_status))
+                            .unwrap_or((' ', ' '));
+                        let (success, msg) = match discard_file(&path, &file, idx_status, wt_status, ssh.as_ref()).await {
+                            Ok(()) => (true, format!("Discarded {file}")),
+                            Err(e) => (false, e.to_string()),
+                        };
+                        let _ = evt_tx_task.send(Event::GitActionResult {
+                            id, action: "discard".to_string(), success, message: msg,
+                        });
+                        if let Ok(git) = refresh_git(&path, ssh.as_ref()).await {
+                            if let Some(ws) = state.workspaces.get_mut(&id) { ws.git = git.clone(); }
+                            let _ = evt_tx_task.send(Event::WorkspaceGitUpdated { id, git });
+                        }
+                    }
+                }
+                Command::GitStash { id, message } => {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        let path = ws.path.clone();
+                        let ssh = ws.ssh.clone();
+                        let (success, msg) = match git_stash(&path, message.as_deref(), ssh.as_ref()).await {
+                            Ok(()) => (true, "Stashed".to_string()),
+                            Err(e) => (false, e.to_string()),
+                        };
+                        let _ = evt_tx_task.send(Event::GitActionResult {
+                            id, action: "stash".to_string(), success, message: msg,
                         });
                         if let Ok(git) = refresh_git(&path, ssh.as_ref()).await {
                             if let Some(ws) = state.workspaces.get_mut(&id) { ws.git = git.clone(); }

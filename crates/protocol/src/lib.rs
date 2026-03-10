@@ -75,6 +75,13 @@ pub struct RemoteBranchInfo {
     pub full_name: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagInfo {
+    pub name: String,
+    pub hash: String,
+    pub date: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GitState {
     pub branch: Option<String>,
@@ -85,6 +92,8 @@ pub struct GitState {
     pub recent_commits: Vec<CommitInfo>,
     pub local_branches: Vec<BranchInfo>,
     pub remote_branches: Vec<RemoteBranchInfo>,
+    #[serde(default)]
+    pub tags: Vec<TagInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +169,14 @@ pub enum Command {
     },
     GitFetch {
         id: WorkspaceId,
+    },
+    GitDiscardFile {
+        id: WorkspaceId,
+        file: String,
+    },
+    GitStash {
+        id: WorkspaceId,
+        message: Option<String>,
     },
     StartTerminal {
         id: WorkspaceId,
