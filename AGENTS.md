@@ -33,6 +33,12 @@ No test suite currently. Verify changes by building and running the TUI manually
 - IDs: `uuid` v4 for workspace and session identifiers
 - Keep `protocol` free of business logic — it is shared types only
 
+## SSH-First Behavior
+
+- Treat SSH-backed workspaces as first-class: when adding or changing features, attempt the SSH path, not just local workspaces.
+- Prefer shared code paths that accept `Option<&SshTarget>` or equivalent rather than separate local-only implementations when practical.
+- If a feature cannot support SSH yet, document the gap clearly in code and the user-facing behavior instead of silently falling back to local-only behavior.
+
 ## Key Files
 
 | Path | Purpose |
