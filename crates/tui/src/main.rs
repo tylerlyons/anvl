@@ -12,8 +12,9 @@ use app::TuiApp;
 use base64::Engine as _;
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+        EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
+        MouseEvent, MouseEventKind,
     },
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
@@ -871,6 +872,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
         let mut stdout = std::io::stdout();
+        let _ = stdout.execute(DisableBracketedPaste);
         let _ = stdout.execute(DisableMouseCapture);
         let _ = stdout.execute(crossterm::cursor::Show);
         let _ = stdout.execute(LeaveAlternateScreen);
@@ -881,6 +883,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
     let mut stdout = std::io::stdout();
     stdout.execute(EnterAlternateScreen)?;
     stdout.execute(EnableMouseCapture)?;
+    stdout.execute(EnableBracketedPaste)?;
 
     let backend_term = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend_term)?;
@@ -1822,7 +1825,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 {
                                     app.begin_rename_tab();
                                 }
-                                KeyCode::Char('a') => {
+                                KeyCode::Char('a')
+                                    if matches!(app.focus, app::Focus::WsTerminalTabs) =>
+                                {
                                     let _ = backend
                                         .cmd_tx
                                         .send(Command::StartTerminal {
@@ -1834,7 +1839,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         .await;
                                     app.focus = app::Focus::WsTerminal;
                                 }
-                                KeyCode::Char('A') => {
+                                KeyCode::Char('A')
+                                    if matches!(app.focus, app::Focus::WsTerminalTabs) =>
+                                {
                                     let _ = backend
                                         .cmd_tx
                                         .send(Command::StopTerminal {
@@ -1844,7 +1851,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         })
                                         .await;
                                 }
-                                KeyCode::Char('s') => {
+                                KeyCode::Char('s')
+                                    if matches!(app.focus, app::Focus::WsTerminalTabs) =>
+                                {
                                     let _ = backend
                                         .cmd_tx
                                         .send(Command::StartTerminal {
@@ -1855,7 +1864,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         })
                                         .await;
                                 }
-                                KeyCode::Char('S') => {
+                                KeyCode::Char('S')
+                                    if matches!(app.focus, app::Focus::WsTerminalTabs) =>
+                                {
                                     let _ = backend
                                         .cmd_tx
                                         .send(Command::StopTerminal {
@@ -1869,6 +1880,29 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             }
                         }
                     };
+                }
+                Event::Paste(text) => {
+                    if matches!(app.focus, app::Focus::WsTerminal) {
+                        if let Route::Workspace { id } = app.route {
+                            // Wrap pasted text in bracketed paste sequences so the
+                            // inner shell/editor knows it is a paste (prevents
+                            // unintended interpretation of special characters).
+                            let mut payload = Vec::new();
+                            payload.extend_from_slice(b"\x1b[200~");
+                            payload.extend_from_slice(text.as_bytes());
+                            payload.extend_from_slice(b"\x1b[201~");
+                            let _ = backend
+                                .cmd_tx
+                                .send(Command::SendTerminalInput {
+                                    id,
+                                    kind: app.active_tab_kind(),
+                                    tab_id: Some(app.active_tab_id()),
+                                    data_b64: base64::engine::general_purpose::STANDARD
+                                        .encode(payload),
+                                })
+                                .await;
+                        }
+                    }
                 }
                 Event::Mouse(mouse) => {
                     handle_mouse(&mut app, &backend.cmd_tx, &mut terminal, mouse).await;
@@ -1884,6 +1918,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
     }
 
     disable_raw_mode()?;
+    std::io::stdout().execute(DisableBracketedPaste)?;
     std::io::stdout().execute(DisableMouseCapture)?;
     std::io::stdout().execute(LeaveAlternateScreen)?;
     Ok(())
