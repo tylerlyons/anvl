@@ -15,4 +15,4 @@ overflow-checks = false
 vt100 = { path = "vendor/vt100" }
 
 [workspace.package]
-version = "0.3.19"
+version = "0.3.20"
